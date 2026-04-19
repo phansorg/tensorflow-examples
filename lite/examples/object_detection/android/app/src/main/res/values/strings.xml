@@ -40,7 +40,6 @@
 
     <string-array name="delegate_spinner_titles">
         <item>CPU</item>
-        <item>GPU</item>
         <item>NNAPI</item>
     </string-array>
 

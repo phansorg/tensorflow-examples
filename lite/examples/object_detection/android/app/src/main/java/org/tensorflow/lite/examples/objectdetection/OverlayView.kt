@@ -27,17 +27,15 @@ import android.view.View
 import androidx.core.content.ContextCompat
 import java.util.LinkedList
 import kotlin.math.max
-import org.tensorflow.lite.task.vision.detector.Detection
 
 class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs) {
 
-    private var results: List<Detection> = LinkedList<Detection>()
+    private var results: List<ObjectDetectorHelper.Detection> = LinkedList()
     private var boxPaint = Paint()
     private var textBackgroundPaint = Paint()
     private var textPaint = Paint()
 
     private var scaleFactor: Float = 1f
-
     private var bounds = Rect()
 
     init {
@@ -77,41 +75,29 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             val left = boundingBox.left * scaleFactor
             val right = boundingBox.right * scaleFactor
 
-            // Draw bounding box around detected objects
-            val drawableRect = RectF(left, top, right, bottom)
-            canvas.drawRect(drawableRect, boxPaint)
+            canvas.drawRect(RectF(left, top, right, bottom), boxPaint)
 
-            // Create text to display alongside detected objects
-            val drawableText =
-                result.categories[0].label + " " +
-                        String.format("%.2f", result.categories[0].score)
-
-            // Draw rect behind display text
+            val drawableText = result.label + " " + String.format("%.2f", result.score)
             textBackgroundPaint.getTextBounds(drawableText, 0, drawableText.length, bounds)
             val textWidth = bounds.width()
             val textHeight = bounds.height()
             canvas.drawRect(
                 left,
                 top,
-                left + textWidth + Companion.BOUNDING_RECT_TEXT_PADDING,
-                top + textHeight + Companion.BOUNDING_RECT_TEXT_PADDING,
+                left + textWidth + BOUNDING_RECT_TEXT_PADDING,
+                top + textHeight + BOUNDING_RECT_TEXT_PADDING,
                 textBackgroundPaint
             )
-
-            // Draw text for detected object
             canvas.drawText(drawableText, left, top + bounds.height(), textPaint)
         }
     }
 
     fun setResults(
-      detectionResults: MutableList<Detection>,
+      detectionResults: List<ObjectDetectorHelper.Detection>,
       imageHeight: Int,
       imageWidth: Int,
     ) {
         results = detectionResults
-
-        // PreviewView is in FILL_START mode. So we need to scale up the bounding box to match with
-        // the size that the captured images will be displayed.
         scaleFactor = max(width * 1f / imageWidth, height * 1f / imageHeight)
     }
 

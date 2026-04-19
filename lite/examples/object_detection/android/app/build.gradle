@@ -113,8 +113,7 @@ dependencies {
     androidTestImplementation "androidx.test:runner:1.4.0"
     androidTestImplementation "androidx.test.espresso:espresso-core:3.4.0"
 
-    implementation 'org.tensorflow:tensorflow-lite-task-vision:0.4.4'
-    // Import the GPU delegate plugin Library for GPU inference
-    implementation 'org.tensorflow:tensorflow-lite-gpu-delegate-plugin:0.4.4'
-    implementation 'org.tensorflow:tensorflow-lite-gpu:2.13.0'
+    implementation 'com.google.ai.edge.litert:litert:1.4.1'
+    implementation 'com.google.ai.edge.litert:litert-support:1.4.1'
+    implementation 'com.google.ai.edge.litert:litert-metadata:1.4.1'
 }

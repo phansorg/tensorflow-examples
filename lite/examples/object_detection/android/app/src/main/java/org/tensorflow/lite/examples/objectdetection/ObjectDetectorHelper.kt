@@ -17,15 +17,23 @@ package org.tensorflow.lite.examples.objectdetection
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.os.SystemClock
 import android.util.Log
-import org.tensorflow.lite.gpu.CompatibilityList
+import java.io.BufferedReader
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.nio.ByteBuffer
+import java.nio.FloatBuffer
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.support.common.FileUtil
 import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.Rot90Op
-import org.tensorflow.lite.task.core.BaseOptions
-import org.tensorflow.lite.task.vision.detector.Detection
-import org.tensorflow.lite.task.vision.detector.ObjectDetector
+import org.tensorflow.lite.support.metadata.MetadataExtractor
 
 class ObjectDetectorHelper(
   var threshold: Float = 0.5f,
@@ -37,114 +45,252 @@ class ObjectDetectorHelper(
   val objectDetectorListener: DetectorListener?
 ) {
 
-    // For this example this needs to be a var so it can be reset on changes. If the ObjectDetector
-    // will not change, a lazy val would be preferable.
-    private var objectDetector: ObjectDetector? = null
+    private var interpreter: Interpreter? = null
+    private var labels: List<String> = emptyList()
 
     init {
         setupObjectDetector()
     }
 
     fun clearObjectDetector() {
-        objectDetector = null
+        interpreter?.close()
+        interpreter = null
     }
 
-    // Initialize the object detector using current settings on the
-    // thread that is using it. CPU and NNAPI delegates can be used with detectors
-    // that are created on the main thread and used on a background thread, but
-    // the GPU delegate needs to be used on the thread that initialized the detector
     fun setupObjectDetector() {
-        // Create the base options for the detector using specifies max results and score threshold
-        val optionsBuilder =
-            ObjectDetector.ObjectDetectorOptions.builder()
-                .setScoreThreshold(threshold)
-                .setMaxResults(maxResults)
-
-        // Set general detection options, including number of used threads
-        val baseOptionsBuilder = BaseOptions.builder().setNumThreads(numThreads)
-
-        // Use the specified hardware for running the model. Default to CPU
-        when (currentDelegate) {
-            DELEGATE_CPU -> {
-                // Default
-            }
-            DELEGATE_GPU -> {
-                if (CompatibilityList().isDelegateSupportedOnThisDevice) {
-                    baseOptionsBuilder.useGpu()
-                } else {
-                    objectDetectorListener?.onError("GPU is not supported on this device")
-                }
-            }
-            DELEGATE_NNAPI -> {
-                baseOptionsBuilder.useNnapi()
-            }
+        val modelName = when (currentModel) {
+            MODEL_MOBILENETV1 -> "mobilenetv1.tflite"
+            MODEL_EFFICIENTDETV0 -> "efficientdet-lite0.tflite"
+            MODEL_EFFICIENTDETV1 -> "efficientdet-lite1.tflite"
+            MODEL_EFFICIENTDETV2 -> "efficientdet-lite2.tflite"
+            else -> "mobilenetv1.tflite"
         }
 
-        optionsBuilder.setBaseOptions(baseOptionsBuilder.build())
-
-        val modelName =
-            when (currentModel) {
-                MODEL_MOBILENETV1 -> "mobilenetv1.tflite"
-                MODEL_EFFICIENTDETV0 -> "efficientdet-lite0.tflite"
-                MODEL_EFFICIENTDETV1 -> "efficientdet-lite1.tflite"
-                MODEL_EFFICIENTDETV2 -> "efficientdet-lite2.tflite"
-                else -> "mobilenetv1.tflite"
-            }
-
         try {
-            objectDetector =
-                ObjectDetector.createFromFileAndOptions(context, modelName, optionsBuilder.build())
-        } catch (e: IllegalStateException) {
+            clearObjectDetector()
+
+            val litertBuffer = FileUtil.loadMappedFile(context, modelName)
+            labels = getModelMetadata(litertBuffer)
+            interpreter = Interpreter(litertBuffer, Interpreter.Options().apply {
+                numThreads = this@ObjectDetectorHelper.numThreads
+                useNNAPI = currentDelegate == DELEGATE_NNAPI
+            })
+        } catch (e: Exception) {
             objectDetectorListener?.onError(
-                "Object detector failed to initialize. See error logs for details"
+                "Object detector failed to initialize. See error logs for details."
             )
-            Log.e("Test", "TFLite failed to load model with error: " + e.message)
+            Log.e(TAG, "LiteRT failed to initialize detector: ${e.message}", e)
         }
     }
 
     fun detect(image: Bitmap, imageRotation: Int) {
-        if (objectDetector == null) {
+        val currentInterpreter = interpreter ?: run {
             setupObjectDetector()
+            interpreter ?: return
         }
 
-        // Inference time is the difference between the system time at the start and finish of the
-        // process
-        var inferenceTime = SystemClock.uptimeMillis()
+        val startTime = SystemClock.uptimeMillis()
 
-        // Create preprocessor for the image.
-        // See https://www.tensorflow.org/lite/inference_with_metadata/
-        //            lite_support#imageprocessor_architecture
-        val imageProcessor =
-            ImageProcessor.Builder()
-                .add(Rot90Op(-imageRotation / 90))
-                .build()
+        try {
+            val (_, inputHeight, inputWidth, _) = currentInterpreter.getInputTensor(0).shape()
+            val tensorImage = createTensorImage(
+                bitmap = image,
+                width = inputWidth,
+                height = inputHeight,
+                rotationDegrees = imageRotation
+            )
 
-        // Preprocess the image and convert it into a TensorImage for detection.
-        val tensorImage = imageProcessor.process(TensorImage.fromBitmap(image))
+            val outputs = runDetection(tensorImage)
+            val detections = getDetections(
+                locations = outputs.locations,
+                categories = outputs.categories,
+                scores = outputs.scores,
+                imageWidth = inputWidth,
+                scaleRatio = inputHeight.toFloat() / tensorImage.height
+            )
 
-        val results = objectDetector?.detect(tensorImage)
-        inferenceTime = SystemClock.uptimeMillis() - inferenceTime
-        objectDetectorListener?.onResults(
-            results,
-            inferenceTime,
-            tensorImage.height,
-            tensorImage.width)
+            val inferenceTime = SystemClock.uptimeMillis() - startTime
+            objectDetectorListener?.onResults(
+                detections,
+                inferenceTime,
+                tensorImage.height,
+                tensorImage.width
+            )
+        } catch (e: Exception) {
+            objectDetectorListener?.onError(
+                "Object detection failed. See error logs for details."
+            )
+            Log.e(TAG, "LiteRT inference failed: ${e.message}", e)
+        }
+    }
+
+    private fun runDetection(tensorImage: TensorImage): DetectionOutputs {
+        val currentInterpreter = interpreter ?: error("Interpreter is not initialized.")
+        val locationOutputShape = currentInterpreter.getOutputTensor(0).shape()
+        val categoryOutputShape = currentInterpreter.getOutputTensor(1).shape()
+        val scoreOutputShape = currentInterpreter.getOutputTensor(2).shape()
+
+        val locationOutputBuffer =
+            FloatBuffer.allocate(locationOutputShape[1] * locationOutputShape[2])
+        val categoryOutputBuffer = FloatBuffer.allocate(categoryOutputShape[1])
+        val scoreOutputBuffer = FloatBuffer.allocate(scoreOutputShape[1])
+
+        currentInterpreter.runForMultipleInputsOutputs(
+            arrayOf(tensorImage.tensorBuffer.buffer),
+            mapOf(
+                0 to locationOutputBuffer,
+                1 to categoryOutputBuffer,
+                2 to scoreOutputBuffer,
+            )
+        )
+
+        locationOutputBuffer.rewind()
+        categoryOutputBuffer.rewind()
+        scoreOutputBuffer.rewind()
+
+        return DetectionOutputs(
+            locations = FloatArray(locationOutputBuffer.capacity()).also { locationOutputBuffer.get(it) },
+            categories = FloatArray(categoryOutputBuffer.capacity()).also { categoryOutputBuffer.get(it) },
+            scores = FloatArray(scoreOutputBuffer.capacity()).also { scoreOutputBuffer.get(it) },
+        )
+    }
+
+    private fun createTensorImage(
+      bitmap: Bitmap,
+      width: Int,
+      height: Int,
+      rotationDegrees: Int
+    ): TensorImage {
+        val rotation = -rotationDegrees / 90
+        val scaledBitmap = fitCenterBitmap(bitmap, width, height)
+        val imageProcessor = ImageProcessor.Builder().add(Rot90Op(rotation)).build()
+        return imageProcessor.process(TensorImage.fromBitmap(scaledBitmap))
+    }
+
+    private fun fitCenterBitmap(
+      originalBitmap: Bitmap,
+      width: Int,
+      height: Int
+    ): Bitmap {
+        val bitmapWithBackground = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmapWithBackground)
+        canvas.drawColor(Color.TRANSPARENT)
+
+        val scale = height.toFloat() / originalBitmap.height
+        val scaledWidth = width * scale
+        val scaledBitmap = Bitmap.createScaledBitmap(
+            originalBitmap.copy(Bitmap.Config.ARGB_8888, true),
+            scaledWidth.toInt(),
+            height,
+            true
+        )
+
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+        val left = (width - scaledWidth) / 2
+        canvas.drawBitmap(scaledBitmap, left, 0f, paint)
+        return bitmapWithBackground
+    }
+
+    private fun getModelMetadata(litertBuffer: ByteBuffer): List<String> {
+        val metadataExtractor = MetadataExtractor(litertBuffer)
+        if (!metadataExtractor.hasMetadata()) {
+            return emptyList()
+        }
+        val inputStream = metadataExtractor.getAssociatedFile("labelmap.txt")
+        return readFileInputStream(inputStream)
+    }
+
+    private fun readFileInputStream(inputStream: InputStream): List<String> {
+        val reader = BufferedReader(InputStreamReader(inputStream))
+        val lines = mutableListOf<String>()
+        var line: String?
+        while (reader.readLine().also { line = it } != null) {
+            lines.add(line.orEmpty())
+        }
+        reader.close()
+        return lines
+    }
+
+    private fun getDetections(
+      locations: FloatArray,
+      categories: FloatArray,
+      scores: FloatArray,
+      imageWidth: Int,
+      scaleRatio: Float
+    ): List<Detection> {
+        val boundingBoxList = getBoundingBoxList(locations, imageWidth, scaleRatio)
+        val resultCount = minOf(maxResults, scores.size, categories.size, boundingBoxList.size)
+
+        return buildList {
+            for (i in 0 until resultCount) {
+                val categoryIndex = categories[i].toInt()
+                val label = labels.getOrNull(categoryIndex) ?: categoryIndex.toString()
+                add(
+                    Detection(
+                        label = label,
+                        boundingBox = boundingBoxList[i],
+                        score = scores[i]
+                    )
+                )
+            }
+        }
+            .filter { !it.boundingBox.isEmpty && it.score >= threshold }
+            .sortedByDescending { it.score }
+    }
+
+    private fun getBoundingBoxList(
+      locations: FloatArray,
+      imageWidth: Int,
+      scaleRatio: Float
+    ): Array<RectF> {
+        val boundingBoxList = Array(locations.size / 4) { RectF() }
+        val actualWidth = imageWidth * scaleRatio
+        val padding = (imageWidth - imageWidth * scaleRatio) / 2
+
+        for (i in boundingBoxList.indices) {
+            val topRatio = locations[i * 4]
+            val leftRatio = locations[i * 4 + 1]
+            val bottomRatio = locations[i * 4 + 2]
+            val rightRatio = locations[i * 4 + 3]
+
+            val top = topRatio.coerceIn(0f, 1f)
+            val left = ((leftRatio * imageWidth - padding) / actualWidth).coerceIn(0f, 1f)
+            val bottom = bottomRatio.coerceIn(top, 1f)
+            val right = ((rightRatio * imageWidth - padding) / actualWidth).coerceIn(left, 1f)
+
+            boundingBoxList[i] = RectF(left, top, right, bottom)
+        }
+
+        return boundingBoxList
     }
 
     interface DetectorListener {
         fun onError(error: String)
         fun onResults(
-          results: MutableList<Detection>?,
+          results: List<Detection>,
           inferenceTime: Long,
           imageHeight: Int,
           imageWidth: Int
         )
     }
 
+    data class Detection(
+      val label: String,
+      val boundingBox: RectF,
+      val score: Float
+    )
+
+    private data class DetectionOutputs(
+      val locations: FloatArray,
+      val categories: FloatArray,
+      val scores: FloatArray
+    )
+
     companion object {
+        private const val TAG = "ObjectDetectorHelper"
+
         const val DELEGATE_CPU = 0
-        const val DELEGATE_GPU = 1
-        const val DELEGATE_NNAPI = 2
+        const val DELEGATE_NNAPI = 1
         const val MODEL_MOBILENETV1 = 0
         const val MODEL_EFFICIENTDETV0 = 1
         const val MODEL_EFFICIENTDETV1 = 2

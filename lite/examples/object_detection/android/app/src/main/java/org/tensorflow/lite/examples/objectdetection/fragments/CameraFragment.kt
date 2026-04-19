@@ -36,13 +36,11 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.navigation.Navigation
-import java.util.LinkedList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import org.tensorflow.lite.examples.objectdetection.ObjectDetectorHelper
 import org.tensorflow.lite.examples.objectdetection.R
 import org.tensorflow.lite.examples.objectdetection.databinding.FragmentCameraBinding
-import org.tensorflow.lite.task.vision.detector.Detection
 
 class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
 
@@ -162,7 +160,7 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         }
 
         // When clicked, change the underlying hardware used for inference. Current options are CPU
-        // GPU, and NNAPI
+        // and NNAPI.
         fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(0, false)
         fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.onItemSelectedListener =
             object : AdapterView.OnItemSelectedListener {
@@ -200,8 +198,7 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         fragmentCameraBinding.bottomSheetLayout.threadsValue.text =
             objectDetectorHelper.numThreads.toString()
 
-        // Needs to be cleared instead of reinitialized because the GPU
-        // delegate needs to be initialized on the thread using it when applicable
+        // Reset the detector so the next frame recreates it with the current settings.
         objectDetectorHelper.clearObjectDetector()
         fragmentCameraBinding.overlay.clear()
     }
@@ -297,7 +294,7 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
     // Update UI after objects have been detected. Extracts original image height/width
     // to scale and place bounding boxes properly through OverlayView
     override fun onResults(
-      results: MutableList<Detection>?,
+      results: List<ObjectDetectorHelper.Detection>,
       inferenceTime: Long,
       imageHeight: Int,
       imageWidth: Int
@@ -308,7 +305,7 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
 
             // Pass necessary information to OverlayView for drawing on the canvas
             fragmentCameraBinding.overlay.setResults(
-                results ?: LinkedList<Detection>(),
+                results,
                 imageHeight,
                 imageWidth
             )
