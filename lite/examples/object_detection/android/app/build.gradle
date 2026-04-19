@@ -16,23 +16,20 @@
 
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
-apply plugin: 'kotlin-kapt'
-apply plugin: "androidx.navigation.safeargs"
+apply plugin: "androidx.navigation.safeargs.kotlin"
 apply plugin: 'de.undercouch.download'
 
 android {
-    compileSdkVersion 32
+    namespace "org.tensorflow.lite.examples.objectdetection"
+    compileSdk 32
+
     defaultConfig {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         applicationId "org.tensorflow.lite.examples.objectdetection"
-        minSdkVersion 21
-        targetSdkVersion 32
+        minSdk 21
+        targetSdk 32
         versionCode 1
         versionName "1.0.0"
-    }
-
-    dataBinding {
-        enabled = true
     }
 
     compileOptions {
@@ -41,7 +38,7 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = rootProject.ext.java_version
+        jvmTarget = rootProject.ext.jvm_target
     }
 
     buildTypes {
