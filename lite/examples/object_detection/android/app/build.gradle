@@ -21,13 +21,13 @@ apply plugin: 'de.undercouch.download'
 
 android {
     namespace "org.tensorflow.lite.examples.objectdetection"
-    compileSdk 32
+    compileSdk 36
 
     defaultConfig {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         applicationId "org.tensorflow.lite.examples.objectdetection"
         minSdk 21
-        targetSdk 32
+        targetSdk 36
         versionCode 1
         versionName "1.0.0"
     }
