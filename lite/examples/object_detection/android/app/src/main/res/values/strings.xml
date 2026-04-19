@@ -37,11 +37,11 @@
     <string name="label_threads">Number of Threads</string>
     <string name="label_delegate">Delegate</string>
     <string name="label_models">ML Model</string>
+    <string name="label_not_available">N/A</string>
 
     <string-array name="delegate_spinner_titles">
         <item>CPU</item>
         <item>GPU</item>
-        <item>NNAPI</item>
     </string-array>
 
     <string-array name="models_spinner_titles">

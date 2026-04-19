@@ -19,13 +19,13 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
-import org.tensorflow.lite.gpu.CompatibilityList
-import org.tensorflow.lite.support.image.ImageProcessor
-import org.tensorflow.lite.support.image.TensorImage
-import org.tensorflow.lite.support.image.ops.Rot90Op
-import org.tensorflow.lite.task.core.BaseOptions
-import org.tensorflow.lite.task.vision.detector.Detection
-import org.tensorflow.lite.task.vision.detector.ObjectDetector
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
+import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector
+import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetectorResult
 
 class ObjectDetectorHelper(
   var threshold: Float = 0.5f,
@@ -37,8 +37,6 @@ class ObjectDetectorHelper(
   val objectDetectorListener: DetectorListener?
 ) {
 
-    // For this example this needs to be a var so it can be reset on changes. If the ObjectDetector
-    // will not change, a lazy val would be preferable.
     private var objectDetector: ObjectDetector? = null
 
     init {
@@ -46,59 +44,55 @@ class ObjectDetectorHelper(
     }
 
     fun clearObjectDetector() {
+        objectDetector?.close()
         objectDetector = null
     }
 
-    // Initialize the object detector using current settings on the
-    // thread that is using it. CPU and NNAPI delegates can be used with detectors
-    // that are created on the main thread and used on a background thread, but
-    // the GPU delegate needs to be used on the thread that initialized the detector
     fun setupObjectDetector() {
-        // Create the base options for the detector using specifies max results and score threshold
-        val optionsBuilder =
-            ObjectDetector.ObjectDetectorOptions.builder()
-                .setScoreThreshold(threshold)
-                .setMaxResults(maxResults)
-
-        // Set general detection options, including number of used threads
-        val baseOptionsBuilder = BaseOptions.builder().setNumThreads(numThreads)
-
-        // Use the specified hardware for running the model. Default to CPU
-        when (currentDelegate) {
-            DELEGATE_CPU -> {
-                // Default
-            }
-            DELEGATE_GPU -> {
-                if (CompatibilityList().isDelegateSupportedOnThisDevice) {
-                    baseOptionsBuilder.useGpu()
-                } else {
-                    objectDetectorListener?.onError("GPU is not supported on this device")
-                }
-            }
-            DELEGATE_NNAPI -> {
-                baseOptionsBuilder.useNnapi()
-            }
+        val modelName = when (currentModel) {
+            MODEL_MOBILENETV1 -> "mobilenetv1.tflite"
+            MODEL_EFFICIENTDETV0 -> "efficientdet-lite0.tflite"
+            MODEL_EFFICIENTDETV1 -> "efficientdet-lite1.tflite"
+            MODEL_EFFICIENTDETV2 -> "efficientdet-lite2.tflite"
+            else -> "mobilenetv1.tflite"
         }
 
-        optionsBuilder.setBaseOptions(baseOptionsBuilder.build())
-
-        val modelName =
-            when (currentModel) {
-                MODEL_MOBILENETV1 -> "mobilenetv1.tflite"
-                MODEL_EFFICIENTDETV0 -> "efficientdet-lite0.tflite"
-                MODEL_EFFICIENTDETV1 -> "efficientdet-lite1.tflite"
-                MODEL_EFFICIENTDETV2 -> "efficientdet-lite2.tflite"
-                else -> "mobilenetv1.tflite"
+        val delegate = when (currentDelegate) {
+            DELEGATE_GPU -> Delegate.GPU
+            DELEGATE_NNAPI -> {
+                objectDetectorListener?.onError(
+                    "NNAPI is not supported in this MediaPipe build. Falling back to CPU."
+                )
+                Delegate.CPU
             }
+            else -> Delegate.CPU
+        }
+
+        val baseOptions = BaseOptions.builder()
+            .setModelAssetPath(modelName)
+            .setDelegate(delegate)
+            .build()
+
+        val options = ObjectDetector.ObjectDetectorOptions.builder()
+            .setBaseOptions(baseOptions)
+            .setRunningMode(RunningMode.IMAGE)
+            .setScoreThreshold(threshold)
+            .setMaxResults(maxResults)
+            .build()
 
         try {
-            objectDetector =
-                ObjectDetector.createFromFileAndOptions(context, modelName, optionsBuilder.build())
+            clearObjectDetector()
+            objectDetector = ObjectDetector.createFromOptions(context, options)
         } catch (e: IllegalStateException) {
             objectDetectorListener?.onError(
-                "Object detector failed to initialize. See error logs for details"
+                "Object detector failed to initialize. See error logs for details."
             )
-            Log.e("Test", "TFLite failed to load model with error: " + e.message)
+            Log.e(TAG, "MediaPipe failed to load model with error: ${e.message}", e)
+        } catch (e: RuntimeException) {
+            objectDetectorListener?.onError(
+                "Object detector failed to initialize. See error logs for details."
+            )
+            Log.e(TAG, "MediaPipe runtime failed to initialize detector: ${e.message}", e)
         }
     }
 
@@ -107,41 +101,46 @@ class ObjectDetectorHelper(
             setupObjectDetector()
         }
 
-        // Inference time is the difference between the system time at the start and finish of the
-        // process
-        var inferenceTime = SystemClock.uptimeMillis()
+        val detector = objectDetector ?: return
+        val startTime = SystemClock.uptimeMillis()
 
-        // Create preprocessor for the image.
-        // See https://www.tensorflow.org/lite/inference_with_metadata/
-        //            lite_support#imageprocessor_architecture
-        val imageProcessor =
-            ImageProcessor.Builder()
-                .add(Rot90Op(-imageRotation / 90))
+        try {
+            val mpImage = BitmapImageBuilder(image).build()
+            val imageProcessingOptions = ImageProcessingOptions.builder()
+                .setRotationDegrees(imageRotation)
                 .build()
 
-        // Preprocess the image and convert it into a TensorImage for detection.
-        val tensorImage = imageProcessor.process(TensorImage.fromBitmap(image))
-
-        val results = objectDetector?.detect(tensorImage)
-        inferenceTime = SystemClock.uptimeMillis() - inferenceTime
-        objectDetectorListener?.onResults(
-            results,
-            inferenceTime,
-            tensorImage.height,
-            tensorImage.width)
+            val results = detector.detect(mpImage, imageProcessingOptions)
+            val inferenceTime = SystemClock.uptimeMillis() - startTime
+            objectDetectorListener?.onResults(
+                results,
+                inferenceTime,
+                image.height,
+                image.width,
+                imageRotation
+            )
+        } catch (e: RuntimeException) {
+            objectDetectorListener?.onError(
+                "Object detection failed. See error logs for details."
+            )
+            Log.e(TAG, "MediaPipe object detection failed: ${e.message}", e)
+        }
     }
 
     interface DetectorListener {
         fun onError(error: String)
         fun onResults(
-          results: MutableList<Detection>?,
+          results: ObjectDetectorResult,
           inferenceTime: Long,
           imageHeight: Int,
-          imageWidth: Int
+          imageWidth: Int,
+          imageRotation: Int
         )
     }
 
     companion object {
+        private const val TAG = "ObjectDetectorHelper"
+
         const val DELEGATE_CPU = 0
         const val DELEGATE_GPU = 1
         const val DELEGATE_NNAPI = 2

@@ -19,24 +19,27 @@ package org.tensorflow.lite.examples.objectdetection
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
 import androidx.core.content.ContextCompat
-import java.util.LinkedList
+import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetectorResult
 import kotlin.math.max
-import org.tensorflow.lite.task.vision.detector.Detection
 
 class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs) {
 
-    private var results: List<Detection> = LinkedList<Detection>()
+    private var results: ObjectDetectorResult? = null
     private var boxPaint = Paint()
     private var textBackgroundPaint = Paint()
     private var textPaint = Paint()
 
     private var scaleFactor: Float = 1f
+    private var outputWidth = 0
+    private var outputHeight = 0
+    private var outputRotation = 0
 
     private var bounds = Rect()
 
@@ -45,6 +48,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
 
     fun clear() {
+        results = null
         textPaint.reset()
         textBackgroundPaint.reset()
         boxPaint.reset()
@@ -69,50 +73,78 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     override fun draw(canvas: Canvas) {
         super.draw(canvas)
 
-        for (result in results) {
-            val boundingBox = result.boundingBox
+        val detectionResults = results?.detections() ?: return
 
-            val top = boundingBox.top * scaleFactor
-            val bottom = boundingBox.bottom * scaleFactor
-            val left = boundingBox.left * scaleFactor
-            val right = boundingBox.right * scaleFactor
+        detectionResults.map { detection ->
+            val boxRect = RectF(
+                detection.boundingBox().left,
+                detection.boundingBox().top,
+                detection.boundingBox().right,
+                detection.boundingBox().bottom
+            )
 
-            // Draw bounding box around detected objects
-            val drawableRect = RectF(left, top, right, bottom)
-            canvas.drawRect(drawableRect, boxPaint)
+            val matrix = Matrix()
+            matrix.postTranslate(-outputWidth / 2f, -outputHeight / 2f)
+            matrix.postRotate(outputRotation.toFloat())
+            if (outputRotation == 90 || outputRotation == 270) {
+                matrix.postTranslate(outputHeight / 2f, outputWidth / 2f)
+            } else {
+                matrix.postTranslate(outputWidth / 2f, outputHeight / 2f)
+            }
+            matrix.mapRect(boxRect)
+            boxRect
+        }.forEachIndexed { index, boxRect ->
+            val top = boxRect.top * scaleFactor
+            val bottom = boxRect.bottom * scaleFactor
+            val left = boxRect.left * scaleFactor
+            val right = boxRect.right * scaleFactor
 
-            // Create text to display alongside detected objects
-            val drawableText =
-                result.categories[0].label + " " +
-                        String.format("%.2f", result.categories[0].score)
+            canvas.drawRect(RectF(left, top, right, bottom), boxPaint)
 
-            // Draw rect behind display text
+            val category = detectionResults[index].categories().firstOrNull() ?: return@forEachIndexed
+            val categoryName = category.categoryName()
+                ?.takeUnless { it.isBlank() }
+                ?: category.displayName()
+                ?.takeUnless { it.isBlank() }
+                ?: "Object"
+            val drawableText = "$categoryName ${String.format("%.2f", category.score())}"
+
             textBackgroundPaint.getTextBounds(drawableText, 0, drawableText.length, bounds)
             val textWidth = bounds.width()
             val textHeight = bounds.height()
             canvas.drawRect(
                 left,
                 top,
-                left + textWidth + Companion.BOUNDING_RECT_TEXT_PADDING,
-                top + textHeight + Companion.BOUNDING_RECT_TEXT_PADDING,
+                left + textWidth + BOUNDING_RECT_TEXT_PADDING,
+                top + textHeight + BOUNDING_RECT_TEXT_PADDING,
                 textBackgroundPaint
             )
 
-            // Draw text for detected object
             canvas.drawText(drawableText, left, top + bounds.height(), textPaint)
         }
     }
 
     fun setResults(
-      detectionResults: MutableList<Detection>,
+      detectionResults: ObjectDetectorResult,
       imageHeight: Int,
       imageWidth: Int,
+      imageRotation: Int
     ) {
         results = detectionResults
+        outputWidth = imageWidth
+        outputHeight = imageHeight
+        outputRotation = imageRotation
 
-        // PreviewView is in FILL_START mode. So we need to scale up the bounding box to match with
-        // the size that the captured images will be displayed.
-        scaleFactor = max(width * 1f / imageWidth, height * 1f / imageHeight)
+        val rotatedWidthHeight = when (imageRotation) {
+            0, 180 -> Pair(imageWidth, imageHeight)
+            90, 270 -> Pair(imageHeight, imageWidth)
+            else -> Pair(imageWidth, imageHeight)
+        }
+
+        scaleFactor = max(
+            width * 1f / rotatedWidthHeight.first,
+            height * 1f / rotatedWidthHeight.second
+        )
     }
 
     companion object {

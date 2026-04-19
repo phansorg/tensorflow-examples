@@ -36,13 +36,12 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.navigation.Navigation
-import java.util.LinkedList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetectorResult
 import org.tensorflow.lite.examples.objectdetection.ObjectDetectorHelper
 import org.tensorflow.lite.examples.objectdetection.R
 import org.tensorflow.lite.examples.objectdetection.databinding.FragmentCameraBinding
-import org.tensorflow.lite.task.vision.detector.Detection
 
 class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
 
@@ -99,6 +98,11 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
             context = requireContext(),
             objectDetectorListener = this)
 
+        fragmentCameraBinding.bottomSheetLayout.threadsMinus.isEnabled = false
+        fragmentCameraBinding.bottomSheetLayout.threadsPlus.isEnabled = false
+        fragmentCameraBinding.bottomSheetLayout.threadsValue.text =
+            getString(R.string.label_not_available)
+
         // Initialize our background executor
         cameraExecutor = Executors.newSingleThreadExecutor()
 
@@ -145,24 +149,7 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
             }
         }
 
-        // When clicked, decrease the number of threads used for detection
-        fragmentCameraBinding.bottomSheetLayout.threadsMinus.setOnClickListener {
-            if (objectDetectorHelper.numThreads > 1) {
-                objectDetectorHelper.numThreads--
-                updateControlsUi()
-            }
-        }
-
-        // When clicked, increase the number of threads used for detection
-        fragmentCameraBinding.bottomSheetLayout.threadsPlus.setOnClickListener {
-            if (objectDetectorHelper.numThreads < 4) {
-                objectDetectorHelper.numThreads++
-                updateControlsUi()
-            }
-        }
-
-        // When clicked, change the underlying hardware used for inference. Current options are CPU
-        // GPU, and NNAPI
+        // When clicked, change the underlying hardware used for inference.
         fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(0, false)
         fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.onItemSelectedListener =
             object : AdapterView.OnItemSelectedListener {
@@ -198,10 +185,9 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         fragmentCameraBinding.bottomSheetLayout.thresholdValue.text =
             String.format("%.2f", objectDetectorHelper.threshold)
         fragmentCameraBinding.bottomSheetLayout.threadsValue.text =
-            objectDetectorHelper.numThreads.toString()
+            getString(R.string.label_not_available)
 
-        // Needs to be cleared instead of reinitialized because the GPU
-        // delegate needs to be initialized on the thread using it when applicable
+        // Reset the detector so the next frame recreates it with the current settings.
         objectDetectorHelper.clearObjectDetector()
         fragmentCameraBinding.overlay.clear()
     }
@@ -297,24 +283,22 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
     // Update UI after objects have been detected. Extracts original image height/width
     // to scale and place bounding boxes properly through OverlayView
     override fun onResults(
-      results: MutableList<Detection>?,
+      results: ObjectDetectorResult,
       inferenceTime: Long,
       imageHeight: Int,
-      imageWidth: Int
+      imageWidth: Int,
+      imageRotation: Int
     ) {
         activity?.runOnUiThread {
             fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text =
                             String.format("%d ms", inferenceTime)
 
-            // Pass necessary information to OverlayView for drawing on the canvas
             fragmentCameraBinding.overlay.setResults(
-                results ?: LinkedList<Detection>(),
+                results,
                 imageHeight,
-                imageWidth
+                imageWidth,
+                imageRotation
             )
-
-            // Force a redraw
-            fragmentCameraBinding.overlay.invalidate()
         }
     }
 
